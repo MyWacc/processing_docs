@@ -1,0 +1,220 @@
+def create_credex_business_data(credex_company, credex_industry, balance_df, eerr1_df):
+
+    balance_sheet_data = balance_df
+
+    region = COUNTRY_TO_REGION.get('Chile', None)
+    tax = TAX_RATES.get('Chile', None)
+    industry_operating_margin = OPERATING_MARGINS_BY_REGION.get(region, None)
+    if region is None or tax is None or industry_operating_margin is None:
+        return None
+        
+    # BALANCE SHEET DATAFRAME
+    filtered_balance_sheet = balance_sheet_data[BALANCE_SHEET_COLUMNS_TO_EXTRACT]
+    filtered_balance_sheet_copy = filtered_balance_sheet.copy()
+
+    last_period = filtered_balance_sheet_copy['asOfDate'].iloc[-1]
+    last_period = last_period.strftime('%Y-%m-%d')
+    currency = filtered_balance_sheet_copy['currencyCode'].iloc[0]
+    high_growth_period = 2
+    cagr_next_2_year = None
+    industry_operating_margin = OPERATING_MARGINS_BY_REGION.get(region, None)
+    ebit_margin_industria = industry_operating_margin.get(credex_industry, None)
+
+    filtered_balance_sheet_copy['OtherCurrentAssets'] = filtered_balance_sheet_copy['CurrentAssets'] - filtered_balance_sheet_copy['CashCashEquivalentsAndShortTermInvestments']
+    filtered_balance_sheet_copy['NetPPE'] = filtered_balance_sheet_copy['GrossPPE'] - filtered_balance_sheet_copy['AccumulatedDepreciation']
+    filtered_balance_sheet_copy['OtherNonCurrentAssets'] = filtered_balance_sheet_copy["TotalNonCurrentAssets"] - filtered_balance_sheet_copy['NetPPE']
+    filtered_balance_sheet_copy['TotalAssets'] = filtered_balance_sheet_copy["TotalNonCurrentAssets"] + filtered_balance_sheet_copy['CurrentAssets']
+    filtered_balance_sheet_copy['OtherCurrentLiabilities'] = filtered_balance_sheet_copy["CurrentLiabilities"] - filtered_balance_sheet_copy["CurrentDebtAndCapitalLeaseObligation"]
+    filtered_balance_sheet_copy['OtherNonCurrentLiabilities'] = filtered_balance_sheet_copy["TotalNonCurrentLiabilitiesNetMinorityInterest"] - filtered_balance_sheet_copy["LongTermDebtAndCapitalLeaseObligation"]
+    filtered_balance_sheet_copy['TotalLiabilities'] = filtered_balance_sheet_copy["TotalNonCurrentLiabilitiesNetMinorityInterest"] + filtered_balance_sheet_copy['CurrentLiabilities']
+    filtered_balance_sheet_copy['OtherEquity'] = filtered_balance_sheet_copy["TotalEquityGrossMinorityInterest"] - filtered_balance_sheet_copy["RetainedEarnings"] - filtered_balance_sheet_copy["CapitalStock"]
+    filtered_balance_sheet_copy['TotalEquityLiabilities'] = filtered_balance_sheet_copy["TotalEquityGrossMinorityInterest"] + filtered_balance_sheet_copy["TotalLiabilities"] 
+    filtered_balance_sheet_copy.drop(['GrossPPE', 'AccumulatedDepreciation'], axis=1, inplace=True)
+
+    filtered_income_statement_data = eerr1_df
+    columns_to_extract = [
+        "asOfDate",
+        "periodType",
+        "TotalRevenue",
+        "CostOfRevenue",
+        "EBIT",
+        "InterestIncomeNonOperating",
+        "InterestExpenseNonOperating",
+        "PretaxIncome",
+        "TaxProvision",
+        "EBITDA"
+    ]
+    filtered_income_statement = filtered_income_statement_data[columns_to_extract]
+    filtered_income_statement_copy = filtered_income_statement.copy()
+    
+    # Insert pending items
+    filtered_income_statement_copy['GrossProfit'] = filtered_income_statement_copy['TotalRevenue'] - filtered_income_statement_copy['CostOfRevenue']
+    filtered_income_statement_copy['SG&A'] = filtered_income_statement_copy['GrossProfit'] - filtered_income_statement_copy['EBIT']
+    filtered_income_statement_copy['OtherIncomeExpense'] = filtered_income_statement_copy['PretaxIncome'] - filtered_income_statement_copy['InterestExpenseNonOperating'] - filtered_income_statement_copy['InterestIncomeNonOperating'] - filtered_income_statement_copy['EBIT']
+    filtered_income_statement_copy['D&A'] = filtered_income_statement_copy['EBITDA'] - filtered_income_statement_copy['EBIT']
+    filtered_income_statement_copy['NetIncome'] = filtered_income_statement_copy['PretaxIncome'] + filtered_income_statement_copy['TaxProvision']
+
+    #Cálculo sales/invested capital y márgenes  
+    filtered_balance_sheet_copy['InvestedCapital'] = filtered_balance_sheet_copy['NetPPE'] + filtered_balance_sheet_copy['OtherCurrentAssets'] - filtered_balance_sheet_copy['OtherCurrentLiabilities'] + 0.02*filtered_income_statement_copy["TotalRevenue"]
+    filtered_balance_sheet_copy['SalesInvestedCapital'] = filtered_income_statement_copy["TotalRevenue"]/filtered_balance_sheet_copy['InvestedCapital']
+    filtered_income_statement_copy["GrossMargin"] = (filtered_income_statement_copy["TotalRevenue"]-filtered_income_statement_copy['CostOfRevenue'])/filtered_income_statement_copy["TotalRevenue"]
+    filtered_income_statement_copy["EBITMargin"] = (filtered_income_statement_copy["EBIT"])/filtered_income_statement_copy["TotalRevenue"]
+
+    # Round gross_margin and ebit_margin_mean to 2 decimal places
+    gross_margin = round(filtered_income_statement_copy['GrossMargin'].mean(), 2)
+    ebit_margin_mean = round(filtered_income_statement_copy['EBITMargin'].mean(), 2)
+    if ebit_margin_mean < ebit_margin_industria:
+        ebit_margin_mean = ebit_margin_industria
+    
+    # CASH FLOW STATEMENT DATAFRAME
+    cash_flow_statement = pd.DataFrame()
+    cash_flow_statement['asOfDate'] = eerr1_df['asOfDate']
+    cash_flow_statement['periodType'] = eerr1_df['periodType']
+    cash_flow_statement['CapitalExpenditure'] = 0
+
+    # Set originals
+    filtered_balance_sheet = filtered_balance_sheet_copy
+    filtered_income_statement = filtered_income_statement_copy
+    filtered_cash_flow_statement = cash_flow_statement[cash_flow_statement['periodType'] != 'TTM']
+    columns_to_extract = [
+        "asOfDate",
+        "periodType",
+        "CapitalExpenditure",
+    ]
+    filtered_cash_flow_statement = filtered_cash_flow_statement[columns_to_extract]
+
+    # Data cleaning
+    coocked_df_list = prepare_data([filtered_balance_sheet, filtered_income_statement, filtered_cash_flow_statement])
+    merged_df = pd.concat(coocked_df_list, axis=1)
+    merged_df = merged_df.iloc[::-1]
+    merged_df = merged_df.sort_index(ascending=False)
+
+    # Diccionario de plantilla según el formato requerido
+    business_value = {
+        'quantitative_input': {
+            'statement_income': {},
+            'parameter_inputs': {
+                'currency': currency,  # Usando el parámetro
+                'industry': credex_industry,  # Usando el parámetro
+                'country': 'Chile',  # Usando el parámetro
+                'region': region,  # Usando el parámetro
+                'company': credex_company,  # Usando el parámetro
+                'units': "-",  # Usando el parámetro
+                'last_periods': last_period,  # Usando el parámetro
+            },
+            'data_continuation': {'high_growth_period': high_growth_period,
+                'caja_operativa_ventas': 0.02,
+                'politica_de_dividendos': 0,
+                'tasa_de_impuesto_marginal': tax,
+                'calculo_kd_con_synthetic_spread': 'Si',
+                'calculo_de_kd_con_coverage_ratio_historico': 'Si',
+                'caja_minima': 0.01,
+                'perdida_de_arrastre_inicial_en_miles': None,
+                'tasa_nueva_deuda_anual': 0.07,
+                'plazo_nueva_deuda_anos': 6,
+                'monto_nueva_deuda_en_miles': 0,
+                'revenue_cagr': cagr_next_2_year,
+                'margen': gross_margin,
+                'margen_ebit': None,
+                'tasa_estatuitaria_local': tax,
+                'depreciación_ventas': None,
+                'non_cash_wc_sales': None,
+                'sales_invested_capital': None,
+                'crecimiento_en_perpetuidad': None,
+                'non_cash_current_assets': None,
+                'margen_convergencia': None,
+                'margen_ebit_convergencia': ebit_margin_mean },
+            'financial_balance_rubio': {}
+        },
+        'check_inputs': True,
+        'missing_key': None,
+        'f29_results_input': None
+    }
+    
+    statement_income_maping = {
+        'TotalRevenue': 'net_revenue',
+        'CostOfRevenue': 'cogs',
+        'GrossProfit': 'gross_profit',
+        "SG&A":"sg_a",
+        "D&A":"d_a",
+        'EBIT': 'ebit_ajusted',
+        'InterestIncomeNonOperating': 'interest_income',
+        "InterestExpenseNonOperating":"financial_expenses",
+        "OtherIncomeExpense":"other_income_expenses",
+        "gain_loss_difference_exchange_rates":"gain_loss_difference_exchange_rates",
+        "NetIncome":"net_income",
+        "EBITDA":"ebitda",
+        "TaxProvision":"effective_tax",
+        "D&A":"depreciacion",
+        "amortizacion":'amortizacion',
+        "CapitalExpenditure":"compra_de_activos_fijos",
+        "compra_de_intangibles":"compra_de_intangibles",
+        }
+    
+    financial_balance_rubio_maping = {
+        "CashCashEquivalentsAndShortTermInvestments":'efectivo_y_equivalentes_al_efectivo',
+        "OtherCurrentAssets":'activos_circulante',
+        "CurrentAssets":'total_activos_corrientes',
+        "NetPPE":'activos_fijos_netos',
+        "OtherNonCurrentAssets":'otros_activos_no_circulantes',
+        "TotalNonCurrentAssets":'total_activos_no_corrientes',
+        "TotalAssets":'total_activos',
+        "CurrentDebtAndCapitalLeaseObligation":'deuda_financiera',
+        "revolving":'revolving',
+        "OtherCurrentLiabilities":'pasivos_circulantes',
+        "CurrentLiabilities":'total_de_pasivos_corrientes',
+        "LongTermDebtAndCapitalLeaseObligation":'deuda_financiera_pasivo',
+        "OtherNonCurrentLiabilities":'otros_pasivos_no_circulantes',
+        "TotalNonCurrentLiabilitiesNetMinorityInterest":'total_de_pasivos_no_corrientes',
+        "TotalLiabilities":'total_pasivos',
+        "CapitalStock":'capital_emitido',
+        "OtherEquity":'otras_reservas',
+        "RetainedEarnings":'ganancias_acumuladas',
+        "TotalEquityGrossMinorityInterest":'patrimonio_atribuible_a_los_propietarios_de_la_controladora',
+        "TotalEquityGrossMinorityInterest":'patrimonio_total',
+        "TotalEquityLiabilities":'total_de_patrimonio_y_pasivos',
+        }
+    
+    text_years = ["first_year", "second_year", "third_year"]
+    unique_years = sorted(set(merged_df.index.year), reverse=True)
+    # Filtrar años hasta 2023
+    filtered_years = [year for year in unique_years if year <= 2023]
+    last_three_years = filtered_years[:3]
+
+    for year in last_three_years:
+        text_year_key = text_years[last_three_years.index(year)]
+        rows_for_year = merged_df[merged_df.index.year == year]
+        for index, row in rows_for_year.iterrows():
+            business_value['quantitative_input']['statement_income'][text_year_key] = {'date': index.strftime('%Y-%m-%d')}
+            break
+    
+        for column in merged_df.columns:
+            if column in statement_income_maping.keys():
+                dict_key = statement_income_maping[column]
+                business_value['quantitative_input']['statement_income'][text_year_key][dict_key] =  row[column]   
+    
+    for year in last_three_years:
+        text_year_key = text_years[last_three_years.index(year)]
+        rows_for_year = merged_df[merged_df.index.year == year]
+        for index, row in rows_for_year.iterrows():
+            business_value['quantitative_input']['financial_balance_rubio'][text_year_key] = {'date': index.strftime('%Y-%m-%d')}
+            break
+        
+        for column in merged_df.columns:
+            if column in financial_balance_rubio_maping.keys():
+                dict_key = financial_balance_rubio_maping[column]
+                business_value['quantitative_input']['financial_balance_rubio'][text_year_key][dict_key] =  row[column]  
+    
+    statement_income = ['net_revenue', 'cogs', 'gross_profit', 'sg_a', 'd_a', 'ebit_ajusted', 'interest_income', 'financial_expenses', 'other_income_expenses', 'gain_loss_difference_exchange_rates', 'net_income', 'ebitda', 'effective_tax', 'depreciacion', 'amortizacion', 'compra_de_activos_fijos', 'compra_de_intangibles']
+    financial_balance_rubio = ['efectivo_y_equivalentes_al_efectivo', 'activos_circulante', 'total_activos_corrientes', 'activos_fijos_netos', 'otros_activos_no_circulantes', 'total_activos_no_corrientes', 'total_activos', 'deuda_financiera', 'revolving', 'pasivos_circulantes', 'total_de_pasivos_corrientes', 'deuda_financiera_pasivo', 'otros_pasivos_no_circulantes', 'total_de_pasivos_no_corrientes', 'total_pasivos', 'capital_emitido', 'otras_reservas', 'ganancias_acumuladas', 'patrimonio_atribuible_a_los_propietarios_de_la_controladora', 'patrimonio_total', 'total_de_patrimonio_y_pasivos']
+    
+    for year in text_years:
+        for value in statement_income:
+            if value not in business_value['quantitative_input']['statement_income'][year].keys() or business_value['quantitative_input']['statement_income'][year][value] == None:
+                business_value['quantitative_input']['statement_income'][year][value] = 0
+
+        for value in financial_balance_rubio:
+            if value not in business_value['quantitative_input']['financial_balance_rubio'][year].keys() or business_value['quantitative_input']['financial_balance_rubio'][year][value] == None:
+                business_value['quantitative_input']['financial_balance_rubio'][year][value] = 0
+    
+    return business_value

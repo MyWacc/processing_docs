@@ -1,0 +1,27 @@
+def parse_credex_input_files(credex_rut, credex_company, credex_industry, credex_b64_input_file):
+    corex_json_dict = financial_apis_services.get_credex_user_tax_folder(credex_rut, credex_b64_input_file)
+    CorexJSON = corex_json_dict
+
+    try:
+        #estructura completa del análisis
+        analisis = CorexJSON["Respuestas"]["AnalisisTributario"]["AnalisisXML"]["Analisis"]
+
+        # datos en otros lugares comunes
+        if "DetalleMensual" in analisis:
+            print("\nEstructura de DetalleMensual:")
+
+        if "Resumen" in analisis:
+            print("\nEstructura de Resumen:")
+            
+
+        #acceder a la ruta original después de la inspección
+        balance_data = CorexJSON["Respuestas"]["AnalisisTributario"]["AnalisisXML"]["Analisis"]["Balance"]["Periodo"]
+        balance_df = create_balance_df(balance_data)
+        balance_df = clean_and_prepare_balance_df(balance_df)
+
+        eerr1_data = CorexJSON["Respuestas"]["AnalisisTributario"]["AnalisisXML"]["Analisis"]["EERR1"]["Periodo"]
+        eerr1_df = create_eerr1_df(eerr1_data)
+        eerr1_df = clean_and_prepare_eerr1_df(eerr1_df)
+
+        business_data = create_credex_business_data(credex_company, credex_industry, balance_df, eerr1_df)
+        return business_data
